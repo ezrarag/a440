@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function projectMembershipDoc(projectId) {
+      return "membership_" + request.auth.uid + "_" + projectId;
+    }
+    function isProjectMember(projectId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/memberships/$(projectMembershipDoc(projectId)));
+    }
+
+    match /units/{unitId} {
+      allow read: if isSignedIn();
+    }
+
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+
+      match /submissions/{submissionId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && request.resource.data.createdByUserId == request.auth.uid;
+        allow update, delete: if isSignedIn() && resource.data.createdByUserId == request.auth.uid;
+      }
+
+      match /signups/{signupId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      }
+    }
+
+    match /roles/{roleId} {
+      allow read: if isSignedIn();
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Top-level membership collection for efficient `where userId == ...` queries.
+    match /memberships/{membershipId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Beam Orchestra Platform schema:
+    // projects/{projectId}/versions/{versionId}
+    match /projects/{projectId} {
+      // Published projects are readable by signed-in users.
+      // Private projects are readable by members.
+      allow read: if isSignedIn() &&
+        (resource.data.isPublished == true || isProjectMember(projectId));
+
+      // Project updates remain member-only.
+      allow create, update, delete: if isProjectMember(projectId);
+
+      match /versions/{versionId} {
+        // Versions are visible if the project is published or user is a member.
+        allow read: if isSignedIn() &&
+          (get(/databases/$(database)/documents/projects/$(projectId)).data.isPublished == true
+            || isProjectMember(projectId));
+
+        // Only members can add/edit versions, and createdByUserId must match caller.
+        allow create: if isProjectMember(projectId) &&
+          request.resource.data.createdByUserId == request.auth.uid;
+        allow update, delete: if isProjectMember(projectId);
+      }
+    }
+  }
+}
